@@ -496,6 +496,72 @@ test_auth_switch_missing_native_auth_is_fixture_safe() {
     assert_output_not_contains_secret_markers "$native_marker"
 }
 
+create_backup_fixture() {
+    local name="$1" marker="$2"
+    write_auth_fixture "$PROFILES/_shared/auth-backups/$name" "$marker"
+}
+
+test_auth_backups_list_is_sanitized() {
+    local old_marker="BACKUP_OLD_SECRET"
+    local new_marker="BACKUP_NEW_SECRET"
+    mkdir -p "$PROFILES/_shared/auth-backups"
+    create_backup_fixture "auth-20260101T000000Z-100.json" "$old_marker"
+    create_backup_fixture "auth-20260102T000000Z-200.json" "$new_marker"
+    printf 'ignore\n' > "$PROFILES/_shared/auth-backups/not-auth.json"
+    mkdir -p "$PROFILES/_shared/auth-backups/auth-20260103T000000Z-300.json"
+    ln -s "$PROFILES/_shared/auth-backups/auth-20260102T000000Z-200.json" "$PROFILES/_shared/auth-backups/auth-20260104T000000Z-400.json"
+
+    run_cli auth backups
+    assert_status 0
+    assert_stdout_contains "Auth backups:"
+    assert_stdout_contains "auth-20260101T000000Z-100.json"
+    assert_stdout_contains "auth-20260102T000000Z-200.json"
+    assert_stdout_contains "$PROFILES/_shared/auth-backups/auth-20260102T000000Z-200.json"
+    assert_stdout_contains "* auth-20260102T000000Z-200.json"
+    assert_stdout_not_contains "not-auth.json"
+    assert_stdout_not_contains "auth-20260103T000000Z-300.json"
+    assert_stdout_not_contains "auth-20260104T000000Z-400.json"
+    assert_output_not_contains_secret_markers "$old_marker" "$new_marker" "access_token" "refresh_token" "account_id"
+
+    rm -rf "$PROFILES/_shared/auth-backups"
+    run_cli auth backups
+    assert_status 0
+    assert_stdout_contains "No auth backups found."
+}
+
+test_auth_restore_uses_latest_backup_without_leaking_tokens() {
+    local old_marker="RESTORE_OLD_SECRET"
+    local new_marker="RESTORE_NEW_SECRET"
+    local native_marker="RESTORE_NATIVE_SECRET"
+    mkdir -p "$PROFILES/_shared/auth-backups"
+    create_backup_fixture "auth-20260101T000000Z-100.json" "$old_marker"
+    create_backup_fixture "auth-20260102T000000Z-200.json" "$new_marker"
+    write_auth_fixture "$HOME_FIXTURE/.codex/auth.json" "$native_marker"
+
+    run_cli auth restore
+    assert_status 0
+    assert_stdout_contains "Restored native auth.json from:"
+    assert_stdout_contains "$PROFILES/_shared/auth-backups/auth-20260102T000000Z-200.json"
+    assert_stdout_contains "$HOME_FIXTURE/.codex/auth.json"
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$PROFILES/_shared/auth-backups/auth-20260102T000000Z-200.json"
+    assert_output_not_contains_secret_markers "$old_marker" "$new_marker" "$native_marker" "access_token" "refresh_token" "account_id"
+
+    run_cli auth restore auth-20260101T000000Z-100.json
+    assert_status 0
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$PROFILES/_shared/auth-backups/auth-20260101T000000Z-100.json"
+    assert_output_not_contains_secret_markers "$old_marker" "$new_marker" "$native_marker" "access_token" "refresh_token" "account_id"
+
+    run_cli auth restore "../auth-20260101T000000Z-100.json"
+    assert_status_nonzero
+    run_cli auth restore "auth-20260101T000000Z-100.json/evil"
+    assert_status_nonzero
+    ln -s "$PROFILES/_shared/auth-backups/auth-20260101T000000Z-100.json" "$PROFILES/_shared/auth-backups/auth-20260103T000000Z-300.json"
+    run_cli auth restore auth-20260103T000000Z-300.json
+    assert_status_nonzero
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$PROFILES/_shared/auth-backups/auth-20260101T000000Z-100.json"
+    assert_output_not_contains_secret_markers "$old_marker" "$new_marker" "$native_marker"
+}
+
 run_test() {
     TEST_NAME="$1"
     shift
@@ -523,6 +589,8 @@ run_test "SAFE-04 process detection is narrow and best-effort" test_process_dete
 run_test "AUTH-02 auth paths preview is sanitized and fixture-safe" test_auth_paths_preview_is_sanitized_and_fixture_safe
 run_test "AUTH-01 auth switch replaces only native auth and creates backup" test_auth_switch_replaces_only_native_auth_and_creates_backup
 run_test "AUTH-01 auth switch missing native/source edges are safe" test_auth_switch_missing_native_auth_is_fixture_safe
+run_test "BACK-03 auth backups list is sanitized" test_auth_backups_list_is_sanitized
+run_test "BACK-02 auth restore uses latest backup without leaking tokens" test_auth_restore_uses_latest_backup_without_leaking_tokens
 
 if [[ $TESTS_FAILED -gt 0 ]]; then
     echo "$TESTS_FAILED/$TESTS_RUN test(s) failed" >&2

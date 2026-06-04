@@ -122,6 +122,42 @@ new_auth_backup_name() {
     printf 'auth-%s-%s.json' "$(date -u +%Y%m%dT%H%M%SZ)" "$$"
 }
 
+is_auth_backup_name() {
+    local name="${1:-}"
+    [[ "$name" =~ ^auth-[0-9]{8}T[0-9]{6}Z-[0-9]+\.json$ ]]
+}
+
+list_auth_backups() {
+    local dir
+    dir="$(auth_backup_dir)"
+    [[ -d "$dir" ]] || return 0
+
+    local path name
+    for path in "$dir"/auth-*.json; do
+        [[ -f "$path" && ! -L "$path" ]] || continue
+        name="$(basename "$path")"
+        is_auth_backup_name "$name" || continue
+        printf '%s\n' "$path"
+    done | sort
+}
+
+latest_auth_backup() {
+    list_auth_backups | tail -1
+}
+
+safe_auth_backup_path() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || die "backup name required"
+    [[ "$name" != *"/"* && "$name" != *".."* ]] || die "unsafe backup name: $name"
+    is_auth_backup_name "$name" || die "invalid backup name: $name"
+
+    local path
+    path="$(auth_backup_dir)/$name"
+    [[ -f "$path" ]] || die "backup not found: $name"
+    [[ ! -L "$path" ]] || die "refusing symlink backup: $name"
+    echo "$path"
+}
+
 backup_auth_file() {
     local src
     src="$(native_auth_file)"
@@ -669,6 +705,8 @@ cmd_auth() {
     case "$sub" in
         paths)          cmd_auth_paths "$@" ;;
         switch)         cmd_auth_switch "$@" ;;
+        backups)        cmd_auth_backups "$@" ;;
+        restore)        cmd_auth_restore "$@" ;;
         help|-h|--help|"") cmd_auth_help ;;
         *)              die "unknown auth subcommand: $sub (try: codex-profile auth help)" ;;
     esac
@@ -684,6 +722,8 @@ ${C_BOLD}USAGE${C_RESET}
 ${C_BOLD}SUBCOMMANDS${C_RESET}
   ${C_CYAN}paths${C_RESET} <profile>       Preview auth-required paths without reading token contents
   ${C_CYAN}switch${C_RESET} <profile>      Replace native auth.json from profile auth.json with backup
+  ${C_CYAN}backups${C_RESET}               List managed native auth backups without reading contents
+  ${C_CYAN}restore${C_RESET} [backup]      Restore latest or named native auth backup
   ${C_CYAN}help${C_RESET}                  Show auth subcommand usage
 
 ${C_BOLD}SAFETY MODEL${C_RESET}
@@ -716,6 +756,48 @@ cmd_auth_switch() {
     backup_auth_file
     copy_auth_without_leaking "$source" "$target"
     ok "native auth.json replaced from profile '$name'"
+}
+
+cmd_auth_backups() {
+    local backups
+    backups="$(list_auth_backups)"
+    if [[ -z "$backups" ]]; then
+        echo "No auth backups found."
+        echo "Backup directory:"
+        echo "  $(auth_backup_dir)"
+        return 0
+    fi
+
+    local latest path name size marker
+    latest="$(printf '%s\n' "$backups" | tail -1)"
+    echo "Auth backups:"
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        name="$(basename "$path")"
+        size="$(wc -c < "$path" | tr -d ' ')"
+        marker=" "
+        [[ "$path" == "$latest" ]] && marker="*"
+        printf "%s %s  %s bytes  %s\n" "$marker" "$name" "$size" "$path"
+    done <<< "$backups"
+}
+
+cmd_auth_restore() {
+    local requested="${1:-}"
+    local backup_path
+    if [[ -n "$requested" ]]; then
+        backup_path="$(safe_auth_backup_path "$requested")"
+    else
+        backup_path="$(latest_auth_backup)"
+        [[ -n "$backup_path" ]] || die "no auth backups found"
+    fi
+
+    local target
+    target="$(native_auth_file)"
+    copy_auth_without_leaking "$backup_path" "$target"
+    echo "Restored native auth.json from:"
+    echo "  $backup_path"
+    echo "Native auth target:"
+    echo "  $target"
 }
 
 cmd_shell_init() {
