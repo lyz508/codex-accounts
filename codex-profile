@@ -96,6 +96,44 @@ write_active_profile() {
     fi
 }
 
+native_codex_dir() {
+    echo "$HOME/.codex"
+}
+
+native_auth_file() {
+    echo "$(native_codex_dir)/auth.json"
+}
+
+profile_auth_file() {
+    local name="$1"
+    echo "$(profile_path "$name")/auth.json"
+}
+
+auth_backup_dir() {
+    echo "$SHARED_DIR/auth-backups"
+}
+
+ensure_auth_backup_dir() {
+    mkdir -p "$(auth_backup_dir)"
+    chmod 700 "$(auth_backup_dir)" 2>/dev/null || true
+}
+
+print_auth_required_paths() {
+    local name="$1"
+    validate_profile_name "$name"
+    profile_exists "$name" || die "profile '$name' not found"
+
+    echo "Auth-required files:"
+    echo "  auth.json"
+    echo
+    echo "Native auth target:"
+    echo "  $(native_auth_file)"
+    echo "Profile auth source:"
+    echo "  $(profile_auth_file "$name")"
+    echo "Backup directory:"
+    echo "  $(auth_backup_dir)"
+}
+
 # --- shared config helpers --------------------------------------------------
 
 ensure_shared() {
@@ -590,6 +628,42 @@ cmd_config_relink_all() {
     fi
 }
 
+cmd_auth() {
+    local sub="${1:-help}"
+    [[ $# -gt 0 ]] && shift || true
+
+    case "$sub" in
+        paths)          cmd_auth_paths "$@" ;;
+        help|-h|--help|"") cmd_auth_help ;;
+        *)              die "unknown auth subcommand: $sub (try: codex-profile auth help)" ;;
+    esac
+}
+
+cmd_auth_help() {
+    cat <<EOF
+${C_BOLD}codex-profile auth${C_RESET} - manage minimal Codex auth replacement
+
+${C_BOLD}USAGE${C_RESET}
+  codex-profile auth <subcommand>
+
+${C_BOLD}SUBCOMMANDS${C_RESET}
+  ${C_CYAN}paths${C_RESET} <profile>       Preview auth-required paths without reading token contents
+  ${C_CYAN}help${C_RESET}                  Show auth subcommand usage
+
+${C_BOLD}SAFETY MODEL${C_RESET}
+  Minimal auth commands operate on auth.json only. They do not copy sessions,
+  history, logs, cache, or other Codex runtime state.
+EOF
+}
+
+cmd_auth_paths() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || die "usage: codex-profile auth paths <profile>"
+    validate_profile_name "$name"
+    profile_exists "$name" || die "profile '$name' not found"
+    print_auth_required_paths "$name"
+}
+
 cmd_shell_init() {
     # Sets CODEX_HOME for every new shell, based on the active profile.
     cat <<'EOF'
@@ -626,6 +700,7 @@ ${C_BOLD}COMMANDS${C_RESET}
   ${C_CYAN}import-current${C_RESET} [name]      Import existing ~/.codex as a profile (default: 'default')
   ${C_CYAN}switch${C_RESET} <name>              Make <name> the active profile (no re-login)
   ${C_CYAN}remove${C_RESET} <name>              Delete a profile and all its credentials
+  ${C_CYAN}auth${C_RESET} <subcommand>          Manage minimal auth replacement - see: auth help
   ${C_CYAN}config${C_RESET} <subcommand>        Manage shared config.toml (MCP servers etc.) - see: config help
   ${C_CYAN}env${C_RESET}                        Print 'export CODEX_HOME=...' for eval
   ${C_CYAN}run${C_RESET} -- <cmd> [args]        Run a command with the active profile's CODEX_HOME
@@ -666,6 +741,7 @@ main() {
         import-current|import) cmd_import_current "$@" ;;
         switch|use)           cmd_switch "$@" ;;
         remove|rm|delete)     cmd_remove "$@" ;;
+        auth)                 cmd_auth "$@" ;;
         env)                  cmd_env "$@" ;;
         run|exec)             cmd_run "$@" ;;
         config)               cmd_config "$@" ;;

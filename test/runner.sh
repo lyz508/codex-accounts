@@ -114,6 +114,22 @@ assert_stderr_contains() {
     grep -Fq "$1" "$STDERR_FILE" || fail "stderr missing: $1; stderr=$(cat "$STDERR_FILE")"
 }
 
+assert_stdout_not_contains() {
+    grep -Fq "$1" "$STDOUT_FILE" && fail "stdout unexpectedly contained forbidden text: $1"
+}
+
+assert_stderr_not_contains() {
+    grep -Fq "$1" "$STDERR_FILE" && fail "stderr unexpectedly contained forbidden text: $1"
+}
+
+assert_output_not_contains_secret_markers() {
+    local marker
+    for marker in "$@"; do
+        assert_stdout_not_contains "$marker"
+        assert_stderr_not_contains "$marker"
+    done
+}
+
 assert_file_exists() {
     [[ -e "$1" ]] || fail "missing file: $1"
 }
@@ -130,6 +146,18 @@ assert_file_content() {
     local file="$1" expected="$2" actual
     actual="$(cat "$file")"
     [[ "$actual" == "$expected" ]] || fail "expected $file content '$expected', got '$actual'"
+}
+
+assert_files_same_without_printing() {
+    local left="$1" right="$2"
+    cmp -s "$left" "$right" || fail "files differ: $left $right"
+}
+
+write_auth_fixture() {
+    local path="$1" marker="$2"
+    mkdir -p "$(dirname "$path")"
+    printf '{"auth_mode":"chatgpt","tokens":{"access_token":"%s-access","refresh_token":"%s-refresh","account_id":"%s-account"},"last_refresh":"fixture"}\n' "$marker" "$marker" "$marker" > "$path"
+    chmod 600 "$path" 2>/dev/null || true
 }
 
 test_lifecycle_commands_are_isolated() {
@@ -363,6 +391,34 @@ test_process_detection_is_narrow_and_best_effort() {
     ! grep -F "pgrep -f 'codex' 2>/dev/null | xargs" codex-profile >/dev/null || fail "raw pgrep -f codex pipeline remains"
 }
 
+test_auth_paths_preview_is_sanitized_and_fixture_safe() {
+    local native_marker="NATIVE_SECRET_MARKER"
+    local profile_marker="PROFILE_SECRET_MARKER"
+    run_cli add work
+    assert_status 0
+    write_auth_fixture "$HOME_FIXTURE/.codex/auth.json" "$native_marker"
+    write_auth_fixture "$PROFILES/work/auth.json" "$profile_marker"
+
+    run_cli auth paths work
+    assert_status 0
+    assert_stdout_contains "Auth-required files:"
+    assert_stdout_contains "auth.json"
+    assert_stdout_contains "$HOME_FIXTURE/.codex/auth.json"
+    assert_stdout_contains "$PROFILES/work/auth.json"
+    assert_stdout_contains "$PROFILES/_shared/auth-backups"
+    assert_output_not_contains_secret_markers "$native_marker" "$profile_marker"
+    assert_stdout_not_contains "$REAL_CODEX"
+    assert_stdout_not_contains "$REAL_PROFILES"
+
+    run_cli auth paths "../evil"
+    assert_status_nonzero
+    run_cli auth paths missing
+    assert_status_nonzero
+    assert_output_not_contains_secret_markers "$native_marker" "$profile_marker"
+
+    grep -v '^[[:space:]]*#' codex-profile | grep -F 'cmd_auth_paths' >/dev/null || fail "cmd_auth_paths missing from source"
+}
+
 run_test() {
     TEST_NAME="$1"
     shift
@@ -387,6 +443,7 @@ run_test "SAFE-01 list and config status skip invalid dirs" test_list_and_config
 run_test "SAFE-02 active writes are atomic" test_atomic_active_writes_for_switch_and_import
 run_test "SAFE-03 remove rejects unmanaged targets" test_safe_remove_rejects_unmanaged_targets
 run_test "SAFE-04 process detection is narrow and best-effort" test_process_detection_is_narrow_and_best_effort
+run_test "AUTH-02 auth paths preview is sanitized and fixture-safe" test_auth_paths_preview_is_sanitized_and_fixture_safe
 
 if [[ $TESTS_FAILED -gt 0 ]]; then
     echo "$TESTS_FAILED/$TESTS_RUN test(s) failed" >&2
