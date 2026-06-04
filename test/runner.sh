@@ -116,10 +116,12 @@ assert_stderr_contains() {
 
 assert_stdout_not_contains() {
     grep -Fq "$1" "$STDOUT_FILE" && fail "stdout unexpectedly contained forbidden text: $1"
+    return 0
 }
 
 assert_stderr_not_contains() {
     grep -Fq "$1" "$STDERR_FILE" && fail "stderr unexpectedly contained forbidden text: $1"
+    return 0
 }
 
 assert_output_not_contains_secret_markers() {
@@ -419,6 +421,81 @@ test_auth_paths_preview_is_sanitized_and_fixture_safe() {
     grep -v '^[[:space:]]*#' codex-profile | grep -F 'cmd_auth_paths' >/dev/null || fail "cmd_auth_paths missing from source"
 }
 
+test_auth_switch_replaces_only_native_auth_and_creates_backup() {
+    local native_marker="NATIVE_SWITCH_SECRET"
+    local profile_marker="PROFILE_SWITCH_SECRET"
+    run_cli add work
+    assert_status 0
+    write_auth_fixture "$HOME_FIXTURE/.codex/auth.json" "$native_marker"
+    write_auth_fixture "$PROFILES/work/auth.json" "$profile_marker"
+    mkdir -p "$PROFILES/work/sessions" "$PROFILES/work/log"
+    printf 'session\n' > "$PROFILES/work/sessions/session.jsonl"
+    printf 'history\n' > "$PROFILES/work/history.jsonl"
+    printf 'log\n' > "$PROFILES/work/log/codex.log"
+    printf 'profile-config\n' > "$PROFILES/work/config.toml"
+
+    run_cli auth switch work
+    assert_status 0
+    assert_stdout_contains "Auth-required files:"
+    assert_stdout_contains "auth.json"
+    assert_stdout_contains "$HOME_FIXTURE/.codex/auth.json"
+    assert_stdout_contains "$PROFILES/work/auth.json"
+    assert_stdout_contains "$PROFILES/_shared/auth-backups"
+    assert_stdout_contains "Backed up native auth.json to:"
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$PROFILES/work/auth.json"
+
+    local backup_count backup_file
+    backup_count="$(find "$PROFILES/_shared/auth-backups" -type f -name 'auth-*.json' | wc -l | tr -d ' ')"
+    [[ "$backup_count" == "1" ]] || fail "expected exactly one auth backup, got $backup_count"
+    backup_file="$(find "$PROFILES/_shared/auth-backups" -type f -name 'auth-*.json' | head -1)"
+    grep -Fq "$native_marker" "$backup_file" || fail "backup does not contain original native auth marker"
+    [[ "$(basename "$backup_file")" != *"$native_marker"* ]] || fail "backup filename contains native marker"
+    [[ "$(basename "$backup_file")" != *"$profile_marker"* ]] || fail "backup filename contains profile marker"
+
+    assert_file_not_exists "$HOME_FIXTURE/.codex/sessions/session.jsonl"
+    assert_file_not_exists "$HOME_FIXTURE/.codex/history.jsonl"
+    assert_file_not_exists "$HOME_FIXTURE/.codex/log/codex.log"
+    [[ ! -f "$HOME_FIXTURE/.codex/config.toml" ]] || fail "auth switch copied config.toml"
+    assert_file_not_exists "$PROFILES/.active"
+    assert_output_not_contains_secret_markers "$native_marker" "$profile_marker"
+
+    local switch_body preview_line backup_line copy_line
+    switch_body="$(sed -n '/cmd_auth_switch()/,/^}/p' codex-profile)"
+    preview_line="$(printf '%s\n' "$switch_body" | grep -n 'preview_auth_switch' | head -1 | cut -d: -f1)"
+    backup_line="$(printf '%s\n' "$switch_body" | grep -n 'backup_auth_file' | head -1 | cut -d: -f1)"
+    copy_line="$(printf '%s\n' "$switch_body" | grep -n 'copy_auth_without_leaking' | head -1 | cut -d: -f1)"
+    [[ -n "$preview_line" && -n "$backup_line" && -n "$copy_line" ]] || fail "cmd_auth_switch missing preview/backup/copy calls"
+    [[ "$preview_line" -lt "$backup_line" && "$backup_line" -lt "$copy_line" ]] || fail "cmd_auth_switch call order is not preview -> backup -> copy"
+}
+
+test_auth_switch_missing_native_auth_is_fixture_safe() {
+    local native_marker="NATIVE_MISSING_SOURCE_SECRET"
+    local profile_marker="PROFILE_MISSING_NATIVE_SECRET"
+    run_cli add work
+    assert_status 0
+    write_auth_fixture "$PROFILES/work/auth.json" "$profile_marker"
+
+    run_cli auth switch work
+    assert_status 0
+    assert_stdout_contains "No existing native auth.json to back up."
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$PROFILES/work/auth.json"
+    [[ ! -d "$PROFILES/_shared/auth-backups" ]] || [[ -z "$(find "$PROFILES/_shared/auth-backups" -type f -name 'auth-*.json' -print -quit)" ]] || fail "missing-native switch created a backup"
+    assert_output_not_contains_secret_markers "$profile_marker"
+
+    run_cli add empty
+    assert_status 0
+    write_auth_fixture "$HOME_FIXTURE/.codex/auth.json" "$native_marker"
+    cp "$HOME_FIXTURE/.codex/auth.json" "$TEST_TMP/native-before.json"
+    run_cli auth switch empty
+    assert_status_nonzero
+    assert_stderr_contains "profile 'empty' has no auth.json"
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$TEST_TMP/native-before.json"
+    local backup_count
+    backup_count="$(find "$PROFILES/_shared/auth-backups" -type f -name 'auth-*.json' 2>/dev/null | wc -l | tr -d ' ')"
+    [[ "$backup_count" == "0" ]] || fail "missing-source switch created a backup"
+    assert_output_not_contains_secret_markers "$native_marker"
+}
+
 run_test() {
     TEST_NAME="$1"
     shift
@@ -444,6 +521,8 @@ run_test "SAFE-02 active writes are atomic" test_atomic_active_writes_for_switch
 run_test "SAFE-03 remove rejects unmanaged targets" test_safe_remove_rejects_unmanaged_targets
 run_test "SAFE-04 process detection is narrow and best-effort" test_process_detection_is_narrow_and_best_effort
 run_test "AUTH-02 auth paths preview is sanitized and fixture-safe" test_auth_paths_preview_is_sanitized_and_fixture_safe
+run_test "AUTH-01 auth switch replaces only native auth and creates backup" test_auth_switch_replaces_only_native_auth_and_creates_backup
+run_test "AUTH-01 auth switch missing native/source edges are safe" test_auth_switch_missing_native_auth_is_fixture_safe
 
 if [[ $TESTS_FAILED -gt 0 ]]; then
     echo "$TESTS_FAILED/$TESTS_RUN test(s) failed" >&2

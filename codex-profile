@@ -118,6 +118,35 @@ ensure_auth_backup_dir() {
     chmod 700 "$(auth_backup_dir)" 2>/dev/null || true
 }
 
+new_auth_backup_name() {
+    printf 'auth-%s-%s.json' "$(date -u +%Y%m%dT%H%M%SZ)" "$$"
+}
+
+backup_auth_file() {
+    local src
+    src="$(native_auth_file)"
+    if [[ ! -f "$src" ]]; then
+        echo "No existing native auth.json to back up."
+        return 0
+    fi
+
+    ensure_auth_backup_dir
+    local backup_path
+    backup_path="$(auth_backup_dir)/$(new_auth_backup_name)"
+    cp "$src" "$backup_path"
+    chmod 600 "$backup_path" 2>/dev/null || true
+    echo "Backed up native auth.json to:"
+    echo "  $backup_path"
+}
+
+copy_auth_without_leaking() {
+    local source="$1" target="$2"
+    [[ -f "$source" ]] || die "auth source missing: $source"
+    mkdir -p "$(dirname "$target")"
+    cp "$source" "$target"
+    chmod 600 "$target" 2>/dev/null || true
+}
+
 print_auth_required_paths() {
     local name="$1"
     validate_profile_name "$name"
@@ -132,6 +161,11 @@ print_auth_required_paths() {
     echo "  $(profile_auth_file "$name")"
     echo "Backup directory:"
     echo "  $(auth_backup_dir)"
+}
+
+preview_auth_switch() {
+    local name="$1"
+    print_auth_required_paths "$name"
 }
 
 # --- shared config helpers --------------------------------------------------
@@ -634,6 +668,7 @@ cmd_auth() {
 
     case "$sub" in
         paths)          cmd_auth_paths "$@" ;;
+        switch)         cmd_auth_switch "$@" ;;
         help|-h|--help|"") cmd_auth_help ;;
         *)              die "unknown auth subcommand: $sub (try: codex-profile auth help)" ;;
     esac
@@ -648,6 +683,7 @@ ${C_BOLD}USAGE${C_RESET}
 
 ${C_BOLD}SUBCOMMANDS${C_RESET}
   ${C_CYAN}paths${C_RESET} <profile>       Preview auth-required paths without reading token contents
+  ${C_CYAN}switch${C_RESET} <profile>      Replace native auth.json from profile auth.json with backup
   ${C_CYAN}help${C_RESET}                  Show auth subcommand usage
 
 ${C_BOLD}SAFETY MODEL${C_RESET}
@@ -662,6 +698,24 @@ cmd_auth_paths() {
     validate_profile_name "$name"
     profile_exists "$name" || die "profile '$name' not found"
     print_auth_required_paths "$name"
+}
+
+cmd_auth_switch() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || die "usage: codex-profile auth switch <profile>"
+    validate_profile_name "$name"
+    profile_exists "$name" || die "profile '$name' not found"
+
+    local source target
+    source="$(profile_auth_file "$name")"
+    target="$(native_auth_file)"
+    [[ -f "$source" ]] || die "profile '$name' has no auth.json"
+
+    check_running_codex
+    preview_auth_switch "$name"
+    backup_auth_file
+    copy_auth_without_leaking "$source" "$target"
+    ok "native auth.json replaced from profile '$name'"
 }
 
 cmd_shell_init() {
