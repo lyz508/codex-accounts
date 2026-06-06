@@ -562,6 +562,62 @@ test_auth_restore_uses_latest_backup_without_leaking_tokens() {
     assert_output_not_contains_secret_markers "$old_marker" "$new_marker" "$native_marker"
 }
 
+test_auth_revert_restores_latest_backup_without_leaking_tokens() {
+    local native_marker="REVERT_NATIVE_SECRET"
+    local profile_marker="REVERT_PROFILE_SECRET"
+    run_cli add work
+    assert_status 0
+    write_auth_fixture "$HOME_FIXTURE/.codex/auth.json" "$native_marker"
+    cp "$HOME_FIXTURE/.codex/auth.json" "$TEST_TMP/native-original.json"
+    write_auth_fixture "$PROFILES/work/auth.json" "$profile_marker"
+
+    run_cli auth switch work
+    assert_status 0
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$PROFILES/work/auth.json"
+    local backup_count backup_file
+    backup_count="$(find "$PROFILES/_shared/auth-backups" -type f -name 'auth-*.json' | wc -l | tr -d ' ')"
+    [[ "$backup_count" == "1" ]] || fail "expected exactly one auth backup, got $backup_count"
+    backup_file="$(find "$PROFILES/_shared/auth-backups" -type f -name 'auth-*.json' | head -1)"
+    assert_files_same_without_printing "$backup_file" "$TEST_TMP/native-original.json"
+    assert_output_not_contains_secret_markers "$native_marker" "$profile_marker" "access_token" "refresh_token" "account_id"
+
+    run_cli auth revert
+    assert_status 0
+    assert_stdout_contains "Reverted native auth.json from latest backup:"
+    assert_stdout_contains "$backup_file"
+    assert_stdout_contains "$HOME_FIXTURE/.codex/auth.json"
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$TEST_TMP/native-original.json"
+    assert_output_not_contains_secret_markers "$native_marker" "$profile_marker" "access_token" "refresh_token" "account_id"
+
+    run_cli auth revert extra
+    assert_status_nonzero
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$TEST_TMP/native-original.json"
+    assert_output_not_contains_secret_markers "$native_marker" "$profile_marker" "access_token" "refresh_token" "account_id"
+
+    grep -v '^[[:space:]]*#' codex-profile | grep -F 'cmd_auth_revert' >/dev/null || fail "cmd_auth_revert missing from source"
+    grep -v '^[[:space:]]*#' codex-profile | grep -F 'revert)' >/dev/null || fail "auth revert missing from dispatcher"
+    sed -n '/cmd_auth_revert()/,/^}/p' codex-profile | grep -F 'latest_auth_backup' >/dev/null || fail "cmd_auth_revert does not call latest_auth_backup"
+    sed -n '/cmd_auth_revert()/,/^}/p' codex-profile | grep -F 'copy_auth_without_leaking' >/dev/null || fail "cmd_auth_revert does not call copy_auth_without_leaking"
+}
+
+test_auth_revert_without_backup_is_failure_safe() {
+    local native_marker="REVERT_NO_BACKUP_NATIVE_SECRET"
+    write_auth_fixture "$HOME_FIXTURE/.codex/auth.json" "$native_marker"
+    cp "$HOME_FIXTURE/.codex/auth.json" "$TEST_TMP/native-before-revert.json"
+
+    run_cli auth revert
+    assert_status_nonzero
+    assert_stderr_contains "no auth backups found"
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$TEST_TMP/native-before-revert.json"
+    assert_output_not_contains_secret_markers "$native_marker" "access_token" "refresh_token" "account_id"
+
+    mkdir -p "$PROFILES/_shared/auth-backups"
+    run_cli auth revert
+    assert_status_nonzero
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$TEST_TMP/native-before-revert.json"
+    assert_output_not_contains_secret_markers "$native_marker" "access_token" "refresh_token" "account_id"
+}
+
 test_auth_prune_backups_requires_explicit_confirmation() {
     local old_marker="PRUNE_OLD_SECRET"
     local mid_marker="PRUNE_MID_SECRET"
@@ -683,6 +739,8 @@ run_test "AUTH-01 auth switch replaces only native auth and creates backup" test
 run_test "AUTH-01 auth switch missing native/source edges are safe" test_auth_switch_missing_native_auth_is_fixture_safe
 run_test "BACK-03 auth backups list is sanitized" test_auth_backups_list_is_sanitized
 run_test "BACK-02 auth restore uses latest backup without leaking tokens" test_auth_restore_uses_latest_backup_without_leaking_tokens
+run_test "PROF-03 auth revert restores latest backup without leaking tokens" test_auth_revert_restores_latest_backup_without_leaking_tokens
+run_test "TEST-02 auth revert without backup is failure-safe" test_auth_revert_without_backup_is_failure_safe
 run_test "BACK-04 auth prune backups requires explicit confirmation" test_auth_prune_backups_requires_explicit_confirmation
 run_test "AUTH-03 full CODEX_HOME mode remains compatible after auth commands" test_full_codex_home_mode_remains_compatible_after_auth_commands
 
