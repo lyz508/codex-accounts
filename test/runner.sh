@@ -150,6 +150,19 @@ assert_file_content() {
     [[ "$actual" == "$expected" ]] || fail "expected $file content '$expected', got '$actual'"
 }
 
+removed_archives_for() {
+    local name="$1"
+    find "$PROFILES/_removed" -mindepth 1 -maxdepth 1 -type d -name "$name-removed-*" 2>/dev/null | sort || true
+}
+
+assert_single_removed_archive() {
+    local name="$1" archives count
+    archives="$(removed_archives_for "$name")"
+    count="$(printf '%s\n' "$archives" | sed '/^$/d' | wc -l | tr -d ' ')"
+    [[ "$count" == "1" ]] || fail "expected exactly one removed archive for $name, got $count"
+    printf '%s\n' "$archives"
+}
+
 assert_files_same_without_printing() {
     local left="$1" right="$2"
     cmp -s "$left" "$right" || fail "files differ: $left $right"
@@ -188,6 +201,9 @@ test_lifecycle_commands_are_isolated() {
     assert_status 0
     assert_file_not_exists "$PROFILES/work"
     assert_file_not_exists "$PROFILES/.active"
+    local archive
+    archive="$(assert_single_removed_archive work)"
+    assert_file_exists "$archive"
 }
 
 test_shared_config_status_and_linking() {
@@ -232,7 +248,7 @@ test_shared_config_status_and_linking() {
 }
 
 test_invalid_cli_names_are_rejected() {
-    for name in "../evil" "bad/name" ".active" "_shared" ""; do
+    for name in "../evil" "bad/name" ".active" "_shared" "_removed" ""; do
         run_cli add "$name"
         assert_status_nonzero
     done
@@ -268,17 +284,19 @@ test_invalid_active_state_is_rejected() {
 test_list_and_config_status_skip_invalid_dirs() {
     run_cli add work
     assert_status 0
-    mkdir -p "$PROFILES/bad name" "$PROFILES/.hidden" "$PROFILES/_shared"
+    mkdir -p "$PROFILES/bad name" "$PROFILES/.hidden" "$PROFILES/_shared" "$PROFILES/_removed"
 
     run_cli list
     assert_status 0
     assert_stdout_contains "work"
+    assert_stdout_not_contains "_removed"
     assert_stderr_contains "warning: skipping invalid profile directory: bad name"
     assert_stderr_contains "warning: skipping invalid profile directory: .hidden"
 
     run_cli config status
     assert_status 0
     assert_stdout_contains "work"
+    assert_stdout_not_contains "_removed"
     assert_stderr_contains "warning: skipping invalid profile directory: bad name"
 }
 
@@ -312,8 +330,13 @@ test_safe_remove_rejects_unmanaged_targets() {
     assert_status 0
     assert_file_not_exists "$PROFILES/work"
     assert_file_not_exists "$PROFILES/.active"
+    local archive
+    archive="$(assert_single_removed_archive work)"
+    assert_file_exists "$archive"
 
     run_cli remove _shared
+    assert_status_nonzero
+    run_cli remove _removed
     assert_status_nonzero
 
     run_cli remove "../evil"
@@ -330,6 +353,48 @@ test_safe_remove_rejects_unmanaged_targets() {
     local remove_body
     remove_body="$(sed -n '/cmd_remove()/,/^}/p' codex-profile)"
     [[ "$remove_body" == *"assert_safe_profile_target"* ]] || fail "cmd_remove does not call assert_safe_profile_target"
+    [[ "$remove_body" == *'mv "$path" "$archive_path"'* ]] || fail "cmd_remove does not archive profile with mv"
+    [[ "$remove_body" != *'rm -rf "$path"'* ]] || fail "cmd_remove still deletes profile path"
+}
+
+test_remove_archives_profile_without_deleting_runtime_artifacts() {
+    local marker="REMOVE_AUTH_SECRET"
+    run_cli add work
+    assert_status 0
+    run_cli switch work
+    assert_status 0
+    write_auth_fixture "$PROFILES/work/auth.json" "$marker"
+    mkdir -p "$PROFILES/work/sessions" "$PROFILES/work/log" "$PROFILES/work/hooks" "$PROFILES/work/skills/example" "$PROFILES/work/agents" "$PROFILES/work/generated_images"
+    printf 'session\n' > "$PROFILES/work/sessions/session.jsonl"
+    printf 'log\n' > "$PROFILES/work/log/codex.log"
+    printf 'history\n' > "$PROFILES/work/history.jsonl"
+    printf 'hook\n' > "$PROFILES/work/hooks/hook.sh"
+    printf 'skill\n' > "$PROFILES/work/skills/example/SKILL.md"
+    printf 'agent\n' > "$PROFILES/work/agents/agent.md"
+    printf 'image\n' > "$PROFILES/work/generated_images/image.png"
+
+    run_cli_with_stdin work remove work
+    assert_status 0
+    assert_file_not_exists "$PROFILES/work"
+    assert_file_not_exists "$PROFILES/.active"
+
+    local archive
+    archive="$(assert_single_removed_archive work)"
+    assert_file_exists "$archive/auth.json"
+    assert_file_content "$archive/sessions/session.jsonl" "session"
+    assert_file_content "$archive/log/codex.log" "log"
+    assert_file_content "$archive/history.jsonl" "history"
+    assert_file_content "$archive/hooks/hook.sh" "hook"
+    assert_file_content "$archive/skills/example/SKILL.md" "skill"
+    assert_file_content "$archive/agents/agent.md" "agent"
+    assert_file_content "$archive/generated_images/image.png" "image"
+    assert_output_not_contains_secret_markers "$marker" "access_token" "refresh_token" "account_id"
+
+    run_cli list
+    assert_status 0
+    assert_stdout_not_contains "work"
+    assert_stdout_not_contains "_removed"
+    assert_output_not_contains_secret_markers "$marker" "access_token" "refresh_token" "account_id"
 }
 
 write_process_stubs() {
@@ -733,6 +798,7 @@ run_test "SAFE-01 invalid active state is rejected" test_invalid_active_state_is
 run_test "SAFE-01 list and config status skip invalid dirs" test_list_and_config_status_skip_invalid_dirs
 run_test "SAFE-02 active writes are atomic" test_atomic_active_writes_for_switch_and_import
 run_test "SAFE-03 remove rejects unmanaged targets" test_safe_remove_rejects_unmanaged_targets
+run_test "PROF-02 remove archives profile without deleting runtime artifacts" test_remove_archives_profile_without_deleting_runtime_artifacts
 run_test "SAFE-04 process detection is narrow and best-effort" test_process_detection_is_narrow_and_best_effort
 run_test "AUTH-02 auth paths preview is sanitized and fixture-safe" test_auth_paths_preview_is_sanitized_and_fixture_safe
 run_test "AUTH-01 auth switch replaces only native auth and creates backup" test_auth_switch_replaces_only_native_auth_and_creates_backup
