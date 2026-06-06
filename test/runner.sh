@@ -562,6 +562,98 @@ test_auth_restore_uses_latest_backup_without_leaking_tokens() {
     assert_output_not_contains_secret_markers "$old_marker" "$new_marker" "$native_marker"
 }
 
+test_auth_prune_backups_requires_explicit_confirmation() {
+    local old_marker="PRUNE_OLD_SECRET"
+    local mid_marker="PRUNE_MID_SECRET"
+    local new_marker="PRUNE_NEW_SECRET"
+    mkdir -p "$PROFILES/_shared/auth-backups"
+    create_backup_fixture "auth-20260101T000000Z-100.json" "$old_marker"
+    create_backup_fixture "auth-20260102T000000Z-200.json" "$mid_marker"
+    create_backup_fixture "auth-20260103T000000Z-300.json" "$new_marker"
+    printf 'not-a-backup\n' > "$PROFILES/_shared/auth-backups/not-auth.json"
+    ln -s "$PROFILES/_shared/auth-backups/auth-20260101T000000Z-100.json" "$PROFILES/_shared/auth-backups/auth-20260104T000000Z-400.json"
+
+    run_cli auth prune-backups
+    assert_status_nonzero
+    run_cli auth prune-backups --keep nope
+    assert_status_nonzero
+    run_cli auth prune-backups --keep -1
+    assert_status_nonzero
+
+    run_cli_with_stdin wrong auth prune-backups --keep 1
+    assert_status_nonzero
+    assert_file_exists "$PROFILES/_shared/auth-backups/auth-20260101T000000Z-100.json"
+    assert_file_exists "$PROFILES/_shared/auth-backups/auth-20260102T000000Z-200.json"
+    assert_file_exists "$PROFILES/_shared/auth-backups/auth-20260103T000000Z-300.json"
+    assert_output_not_contains_secret_markers "$old_marker" "$mid_marker" "$new_marker" "access_token" "refresh_token" "account_id"
+
+    run_cli_with_stdin prune auth prune-backups --keep 1
+    assert_status 0
+    assert_file_not_exists "$PROFILES/_shared/auth-backups/auth-20260101T000000Z-100.json"
+    assert_file_not_exists "$PROFILES/_shared/auth-backups/auth-20260102T000000Z-200.json"
+    assert_file_exists "$PROFILES/_shared/auth-backups/auth-20260103T000000Z-300.json"
+    assert_file_exists "$PROFILES/_shared/auth-backups/not-auth.json"
+    [[ -L "$PROFILES/_shared/auth-backups/auth-20260104T000000Z-400.json" ]] || fail "symlink backup was unexpectedly removed"
+    assert_output_not_contains_secret_markers "$old_marker" "$mid_marker" "$new_marker" "access_token" "refresh_token" "account_id"
+
+    grep -v '^[[:space:]]*#' codex-profile | grep -F 'cmd_auth_prune_backups' >/dev/null || fail "cmd_auth_prune_backups missing from source"
+    sed -n '/cmd_auth_prune_backups()/,/^}/p' codex-profile | grep -F 'safe_auth_backup_path' >/dev/null || fail "cmd_auth_prune_backups does not call safe_auth_backup_path"
+}
+
+test_full_codex_home_mode_remains_compatible_after_auth_commands() {
+    local native_marker="COMPAT_NATIVE_SECRET"
+    local personal_marker="COMPAT_PERSONAL_SECRET"
+    run_cli add work
+    assert_status 0
+    run_cli add personal
+    assert_status 0
+    run_cli switch work
+    assert_status 0
+    assert_file_content "$PROFILES/.active" "work"
+
+    run_cli env
+    assert_status 0
+    assert_stdout_contains "CODEX_HOME=$PROFILES/work"
+    run_cli run -- sh -c 'printf "%s" "$CODEX_HOME"'
+    assert_status 0
+    assert_stdout_contains "$PROFILES/work"
+
+    write_auth_fixture "$HOME_FIXTURE/.codex/auth.json" "$native_marker"
+    write_auth_fixture "$PROFILES/personal/auth.json" "$personal_marker"
+    run_cli auth switch personal
+    assert_status 0
+    assert_file_content "$PROFILES/.active" "work"
+
+    run_cli env
+    assert_status 0
+    assert_stdout_contains "CODEX_HOME=$PROFILES/work"
+    assert_stdout_not_contains "$HOME_FIXTURE/.codex"
+    run_cli run -- sh -c 'printf "%s" "$CODEX_HOME"'
+    assert_status 0
+    assert_stdout_contains "$PROFILES/work"
+    assert_stdout_not_contains "$HOME_FIXTURE/.codex"
+
+    run_cli shell-init
+    assert_status 0
+    local shell_output eval_file
+    eval_file="$TEST_TMP/shell-init-eval.sh"
+    cp "$STDOUT_FILE" "$eval_file"
+    cat >> "$eval_file" <<'EVAL'
+printf '%s' "${CODEX_HOME:-}"
+EVAL
+    shell_output="$(CODEX_HOME= HOME="$HOME_FIXTURE" CODEX_PROFILES_DIR="$PROFILES" bash "$eval_file")"
+    [[ "$shell_output" == "$PROFILES/work" ]] || fail "shell-init exported '$shell_output' instead of full profile path"
+
+    run_cli help
+    assert_status 0
+    assert_stdout_contains "auth <subcommand>"
+    run_cli auth help
+    assert_status 0
+    assert_stdout_contains "Minimal auth commands operate on auth.json only"
+    assert_stdout_contains "full CODEX_HOME compatibility mode"
+    assert_output_not_contains_secret_markers "$native_marker" "$personal_marker" "access_token" "refresh_token" "account_id"
+}
+
 run_test() {
     TEST_NAME="$1"
     shift
@@ -591,6 +683,8 @@ run_test "AUTH-01 auth switch replaces only native auth and creates backup" test
 run_test "AUTH-01 auth switch missing native/source edges are safe" test_auth_switch_missing_native_auth_is_fixture_safe
 run_test "BACK-03 auth backups list is sanitized" test_auth_backups_list_is_sanitized
 run_test "BACK-02 auth restore uses latest backup without leaking tokens" test_auth_restore_uses_latest_backup_without_leaking_tokens
+run_test "BACK-04 auth prune backups requires explicit confirmation" test_auth_prune_backups_requires_explicit_confirmation
+run_test "AUTH-03 full CODEX_HOME mode remains compatible after auth commands" test_full_codex_home_mode_remains_compatible_after_auth_commands
 
 if [[ $TESTS_FAILED -gt 0 ]]; then
     echo "$TESTS_FAILED/$TESTS_RUN test(s) failed" >&2

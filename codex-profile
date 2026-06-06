@@ -707,6 +707,7 @@ cmd_auth() {
         switch)         cmd_auth_switch "$@" ;;
         backups)        cmd_auth_backups "$@" ;;
         restore)        cmd_auth_restore "$@" ;;
+        prune-backups)  cmd_auth_prune_backups "$@" ;;
         help|-h|--help|"") cmd_auth_help ;;
         *)              die "unknown auth subcommand: $sub (try: codex-profile auth help)" ;;
     esac
@@ -724,11 +725,14 @@ ${C_BOLD}SUBCOMMANDS${C_RESET}
   ${C_CYAN}switch${C_RESET} <profile>      Replace native auth.json from profile auth.json with backup
   ${C_CYAN}backups${C_RESET}               List managed native auth backups without reading contents
   ${C_CYAN}restore${C_RESET} [backup]      Restore latest or named native auth backup
+  ${C_CYAN}prune-backups${C_RESET} --keep <count>
+                         Delete older managed auth backups after confirmation
   ${C_CYAN}help${C_RESET}                  Show auth subcommand usage
 
 ${C_BOLD}SAFETY MODEL${C_RESET}
   Minimal auth commands operate on auth.json only. They do not copy sessions,
   history, logs, cache, or other Codex runtime state.
+  The top-level switch/env/run commands remain full CODEX_HOME compatibility mode.
 EOF
 }
 
@@ -798,6 +802,45 @@ cmd_auth_restore() {
     echo "  $backup_path"
     echo "Native auth target:"
     echo "  $target"
+}
+
+cmd_auth_prune_backups() {
+    [[ "${1:-}" == "--keep" && -n "${2:-}" ]] || die "usage: codex-profile auth prune-backups --keep <count>"
+    local keep="$2"
+    [[ "$keep" =~ ^[0-9]+$ ]] || die "--keep must be a non-negative integer"
+    [[ -z "${3:-}" ]] || die "usage: codex-profile auth prune-backups --keep <count>"
+
+    local backups total stale_count
+    backups="$(list_auth_backups)"
+    if [[ -z "$backups" ]]; then
+        echo "No auth backups found."
+        return 0
+    fi
+
+    total="$(printf '%s\n' "$backups" | sed '/^$/d' | wc -l | tr -d ' ')"
+    if (( total <= keep )); then
+        echo "No auth backups to prune."
+        echo "Keeping $total backup(s)."
+        return 0
+    fi
+
+    stale_count=$((total - keep))
+    echo "Auth backups selected for deletion:"
+    printf '%s\n' "$backups" | head -n "$stale_count" | sed 's/^/  /'
+    echo
+    read -r -p "Type 'prune' to delete these backups: " confirm
+    [[ "$confirm" == "prune" ]] || die "aborted"
+
+    local removed=0 path name checked
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        name="$(basename "$path")"
+        checked="$(safe_auth_backup_path "$name")"
+        rm -f "$checked"
+        removed=$((removed + 1))
+    done < <(printf '%s\n' "$backups" | head -n "$stale_count")
+
+    ok "removed $removed auth backup(s)"
 }
 
 cmd_shell_init() {
