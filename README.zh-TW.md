@@ -7,8 +7,8 @@
 
 `codex-profile` 現在支援兩種模式：
 
-- **Minimal auth replacement**：只在命名 profile 和原生 `~/.codex/auth.json` 之間複製 `auth.json`。這是建議的帳號切換方式，因為 sessions、logs、hooks、skills、agents、generated files，以及其他 runtime state 都會留在 Codex 原生管理的 `~/.codex`。
-- **完整 `CODEX_HOME` 相容模式**：保留舊行為，讓 `switch`、`env`、`run`、`shell-init` 把 Codex 指到 `~/.codex-profiles/<profile>`。既有工作流仍可繼續使用。
+- **Auth-only switching**：只在命名 profile 和原生 `~/.codex/auth.json` 之間複製 `auth.json`。這是預設帳號切換方式，因為 sessions、logs、hooks、skills、agents、generated files，以及其他 runtime state 都會留在 Codex 原生管理的 `~/.codex`。
+- **完整 `CODEX_HOME` 相容模式**：保留在 `codex-profile home <subcommand>` 底下，讓 Codex 從 `~/.codex-profiles/<profile>` 讀取全部 state。這仍可用於空 profile 的一次性 OAuth 或既有工作流。
 
 每個 profile 都有自己的 `auth.json`。`config.toml` 預設透過 `~/.codex-profiles/_shared/config.toml` 在所有 profile 間共用。
 
@@ -19,9 +19,8 @@ mkdir -p ~/.local/bin
 mv codex-profile ~/.local/bin/
 chmod +x ~/.local/bin/codex-profile
 
-# 可選：讓新 shell 自動套用完整 CODEX_HOME 相容模式。
-echo 'eval "$(codex-profile shell-init)"' >> ~/.zshrc
-exec zsh
+# 可選的 legacy full-mode hook：
+# echo 'eval "$(codex-profile home shell-init)"' >> ~/.zshrc
 ```
 
 ## 指令列表
@@ -31,10 +30,10 @@ exec zsh
 | 指令 | 作用 |
 |---|---|
 | `list` (alias: `ls`) | 列出所有 profile，以 `*` 標示 active full-mode profile，並顯示登入狀態 |
-| `current` (alias: `active`) | 印出目前 active full-mode profile 名稱 |
+| `current` (alias: `active`) | 已移到 `home current`，用於 full-mode profile |
 | `add <name>` | 建立空 profile。第一次以 full mode 跑 `codex` 時可觸發 OAuth |
 | `import-current [name]` | 把現有 `~/.codex` 複製成新 profile（預設名稱 `default`）。首次 import 時會把它的 `config.toml` 升格為 shared file |
-| `switch <name>` (alias: `use`) | 把 `<name>` 設成 active 的完整 `CODEX_HOME` 相容 profile。不會修改原生 auth |
+| `switch <name>` (alias: `use`) | Auth-only switch：先備份原生 `~/.codex/auth.json`，再用 profile auth 取代 |
 | `remove <name>` (alias: `rm`) | 停用 profile，並把資料保存在 `_removed/` 底下（需要輸入 profile 名稱確認） |
 
 ### Minimal auth replacement
@@ -55,9 +54,11 @@ exec zsh
 
 | 指令 | 作用 |
 |---|---|
-| `env` | 印出 active full-mode profile 的 `export CODEX_HOME=...`，可搭配 `eval "$(codex-profile env)"` |
-| `run -- <cmd> [args]` (alias: `exec`) | 用 active full-mode profile 的 `CODEX_HOME` 跑 `<cmd>` |
-| `shell-init` (alias: `init`) | 印出可加入 `~/.zshrc` / `~/.bashrc` 的 snippet，讓新 shell 自動套用 active full-mode profile |
+| `home switch <profile>` (alias: `home use`) | 把 `<profile>` 設成 active full `CODEX_HOME` 相容 profile |
+| `home current` (alias: `home active`) | 印出目前 active full-mode profile 名稱 |
+| `home env` | 印出 active full-mode profile 的 `export CODEX_HOME=...`，可搭配 `eval "$(codex-profile home env)"` |
+| `home run -- <cmd> [args]` (alias: `home exec`) | 用 active full-mode profile 的 `CODEX_HOME` 跑 `<cmd>` |
+| `home shell-init` (alias: `home init`) | 印出 legacy full-mode shell integration snippet |
 
 ### Shared config (`config.toml`)
 
@@ -99,8 +100,8 @@ codex-profile list
 
 ```bash
 codex-profile add personal
-codex-profile switch personal
-codex-profile run -- codex     # 第二個 ChatGPT 帳號的 OAuth
+codex-profile home switch personal
+codex-profile home run -- codex     # 第二個 ChatGPT 帳號的 OAuth
 ```
 
 OAuth 完成後，`~/.codex-profiles/personal/auth.json` 就可以當作 minimal-auth source。
@@ -111,11 +112,12 @@ OAuth 完成後，`~/.codex-profiles/personal/auth.json` 就可以當作 minimal
 
 ```bash
 codex-profile auth paths personal
-codex-profile auth switch personal
+codex-profile switch personal
+unset CODEX_HOME
 codex
 ```
 
-`auth switch` 會先備份目前的原生 `~/.codex/auth.json`，再取代它。它不會碰 `.active`，也不會設定 `CODEX_HOME`。
+Top-level `switch` 是 auth-only alias，等同 `auth switch`：會先備份目前的原生 `~/.codex/auth.json`，再取代它。它不會碰 `.active`，也不會設定 `CODEX_HOME`。
 
 回到前一份 native auth：
 
@@ -135,22 +137,22 @@ codex-profile auth restore auth-20260601T120000Z-12345.json
 當你明確想讓 Codex 從某個 profile 目錄讀取所有 state 時，使用這個模式：
 
 ```bash
-codex-profile switch work
-eval "$(codex-profile env)"
+codex-profile home switch work
+eval "$(codex-profile home env)"
 codex
 ```
 
 或只針對單次指令套用，不改目前 shell：
 
 ```bash
-codex-profile run -- codex
+codex-profile home run -- codex
 ```
 
 > 切換完整 `CODEX_HOME` profile 前，請先關閉正在跑的 Codex processes，避免 OAuth refresh race：
 >
 > ```bash
 > pkill -f codex; sleep 2
-> codex-profile switch <name>
+> codex-profile home switch <name>
 > ```
 
 ### 5. 從 full profiles 遷移到 minimal auth
@@ -159,8 +161,8 @@ codex-profile run -- codex
 2. 確認每個帳號的 profile 都有 `auth.json`。如果沒有，先用 full mode 跑一次：
 
    ```bash
-   codex-profile switch personal
-   codex-profile run -- codex
+   codex-profile home switch personal
+   codex-profile home run -- codex
    ```
 
 3. 預覽 auth-only paths：
@@ -172,7 +174,7 @@ codex-profile run -- codex
 4. 不移動 runtime state，只切換身份：
 
    ```bash
-   codex-profile auth switch personal
+   codex-profile switch personal
    unset CODEX_HOME
    codex
    ```
@@ -267,14 +269,14 @@ Minimal auth 指令只印 paths 和 status。它們不會印 token values 或 au
 
 | 變數 | 用途 | 預設值 |
 |---|---|---|
-| `CODEX_HOME` | Codex CLI 讀取 state 的位置。只有完整相容模式指令（`env`、`run`、`shell-init`）會設定它 | `~/.codex` |
+| `CODEX_HOME` | Codex CLI 讀取 state 的位置。只有明確的完整相容模式指令（`home env`、`home run`、`home shell-init`）會設定它 | `~/.codex` |
 | `CODEX_PROFILES_DIR` | `codex-profile` 存放 profile 目錄的位置 | `~/.codex-profiles` |
 | `EDITOR` / `VISUAL` | `config edit` 使用的編輯器 | `vi` |
 
 ## 移除
 
 ```bash
-# 從 ~/.zshrc / ~/.bashrc 移除 shell-init 那行，然後：
+# 從 ~/.zshrc / ~/.bashrc 移除任何 legacy `codex-profile home shell-init` 那行，然後：
 unset CODEX_HOME
 exec zsh
 

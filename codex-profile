@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# codex-profile: switch between multiple Codex CLI accounts via CODEX_HOME
+# codex-profile: switch between Codex CLI accounts through auth-only defaults
 #
-# Each profile is an isolated CODEX_HOME directory under ~/.codex-profiles/<name>.
-# Existing profiles are never touched. New profiles start empty and trigger
-# Codex's normal OAuth flow on first launch.
+# Each profile stores its own auth.json under ~/.codex-profiles/<name>.
+# Full CODEX_HOME compatibility remains available under `codex-profile home`.
 
 set -euo pipefail
 
@@ -426,8 +425,9 @@ cmd_add() {
     info "linked shared config: ${SHARED_FILES[*]}  ${C_DIM}(MCP servers etc. are inherited)${C_RESET}"
     echo
     echo "Next steps:"
-    echo "  ${C_CYAN}codex-profile switch $name${C_RESET}"
-    echo "  ${C_CYAN}codex${C_RESET}   ${C_DIM}# will trigger OAuth login on first run${C_RESET}"
+    echo "  ${C_CYAN}codex-profile home switch $name${C_RESET}"
+    echo "  ${C_CYAN}codex-profile home run -- codex${C_RESET}   ${C_DIM}# one-time OAuth into this profile${C_RESET}"
+    echo "  ${C_CYAN}unset CODEX_HOME && codex-profile switch $name${C_RESET}   ${C_DIM}# auth-only switch after login${C_RESET}"
 }
 
 cmd_import_current() {
@@ -474,9 +474,9 @@ cmd_import_current() {
     ok "imported existing ~/.codex as profile '${C_BOLD}$name${C_RESET}' and made it active"
 }
 
-cmd_switch() {
+cmd_home_switch() {
     local name="${1:-}"
-    [[ -n "$name" ]] || die "usage: codex-profile switch <name>"
+    [[ -n "$name" ]] || die "usage: codex-profile home switch <name>"
     validate_profile_name "$name"
 
     profile_exists "$name" || die "profile '$name' not found. try: codex-profile add $name"
@@ -495,15 +495,21 @@ cmd_switch() {
     fi
 
     echo
-    echo "To use it in this shell, either:"
-    echo "  ${C_CYAN}eval \"\$(codex-profile env)\"${C_RESET}"
-    echo "  ${C_CYAN}codex-profile run -- <cmd>${C_RESET}     ${C_DIM}# e.g. codex-profile run -- codex${C_RESET}"
+    echo "To use full CODEX_HOME mode in this shell, either:"
+    echo "  ${C_CYAN}eval \"\$(codex-profile home env)\"${C_RESET}"
+    echo "  ${C_CYAN}codex-profile home run -- <cmd>${C_RESET}     ${C_DIM}# e.g. codex-profile home run -- codex${C_RESET}"
     echo
-    echo "Or set up the shell hook once (recommended):"
-    echo "  ${C_CYAN}eval \"\$(codex-profile shell-init)\"${C_RESET}     ${C_DIM}# add to ~/.zshrc or ~/.bashrc${C_RESET}"
+    echo "Auth-only default switch remains:"
+    echo "  ${C_CYAN}codex-profile switch $name${C_RESET}"
 }
 
-cmd_current() {
+cmd_switch() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || die "usage: codex-profile switch <name>"
+    cmd_auth_switch "$name"
+}
+
+cmd_home_current() {
     local active
     active="$(active_profile)"
     if [[ -z "$active" ]]; then
@@ -517,7 +523,7 @@ cmd_current() {
     fi
 }
 
-cmd_env() {
+cmd_home_env() {
     # Emit a line you can `eval` to set CODEX_HOME in the current shell.
     local active
     active="$(active_profile)"
@@ -526,7 +532,7 @@ cmd_env() {
     printf 'export CODEX_HOME=%q\n' "$(profile_path "$active")"
 }
 
-cmd_run() {
+cmd_home_run() {
     # Run a command with CODEX_HOME set to the active profile.
     local active
     active="$(active_profile)"
@@ -534,7 +540,7 @@ cmd_run() {
     profile_exists "$active" || die "active profile '$active' missing on disk"
 
     if [[ "${1:-}" == "--" ]]; then shift; fi
-    [[ $# -gt 0 ]] || die "usage: codex-profile run -- <cmd> [args...]"
+    [[ $# -gt 0 ]] || die "usage: codex-profile home run -- <cmd> [args...]"
 
     CODEX_HOME="$(profile_path "$active")" exec "$@"
 }
@@ -762,7 +768,8 @@ ${C_BOLD}SUBCOMMANDS${C_RESET}
 ${C_BOLD}SAFETY MODEL${C_RESET}
   Minimal auth commands operate on auth.json only. They do not copy sessions,
   history, logs, cache, or other Codex runtime state.
-  The top-level switch/env/run commands remain full CODEX_HOME compatibility mode.
+  Top-level switch/use are auth-only aliases. Full CODEX_HOME compatibility mode
+  is available under codex-profile home <subcommand>.
 EOF
 }
 
@@ -911,6 +918,47 @@ _codex_profile_apply
 EOF
 }
 
+cmd_home() {
+    local sub="${1:-help}"
+    [[ $# -gt 0 ]] && shift || true
+
+    case "$sub" in
+        switch|use)      cmd_home_switch "$@" ;;
+        current|active)  cmd_home_current "$@" ;;
+        env)             cmd_home_env "$@" ;;
+        run|exec)        cmd_home_run "$@" ;;
+        shell-init|init) cmd_shell_init "$@" ;;
+        help|-h|--help|"") cmd_home_help ;;
+        *)               die "unknown home subcommand: $sub (try: codex-profile home help)" ;;
+    esac
+}
+
+cmd_full_mode_moved() {
+    local old="$1" replacement="$2"
+    die "'codex-profile $old' is full CODEX_HOME mode and moved to 'codex-profile home $replacement'. Default switching is auth-only: codex-profile switch <profile>"
+}
+
+cmd_home_help() {
+    cat <<EOF
+${C_BOLD}codex-profile home${C_RESET} - explicit full CODEX_HOME compatibility mode
+
+${C_BOLD}USAGE${C_RESET}
+  codex-profile home <subcommand>
+
+${C_BOLD}SUBCOMMANDS${C_RESET}
+  ${C_CYAN}switch${C_RESET} <profile>      Set active full-mode profile
+  ${C_CYAN}current${C_RESET}               Print active full-mode profile
+  ${C_CYAN}env${C_RESET}                   Print 'export CODEX_HOME=...' for eval
+  ${C_CYAN}run${C_RESET} -- <cmd> [args]   Run a command with profile CODEX_HOME
+  ${C_CYAN}shell-init${C_RESET}            Print shell hook for full-mode CODEX_HOME
+  ${C_CYAN}help${C_RESET}                  Show this help
+
+${C_BOLD}WHEN TO USE${C_RESET}
+  Use this only for one-time OAuth into an empty profile or legacy workflows.
+  The default identity switch is auth-only: codex-profile switch <profile>.
+EOF
+}
+
 cmd_help() {
     cat <<EOF
 ${C_BOLD}codex-profile${C_RESET} - switch between multiple Codex CLI accounts
@@ -920,16 +968,17 @@ ${C_BOLD}USAGE${C_RESET}
 
 ${C_BOLD}COMMANDS${C_RESET}
   ${C_CYAN}list${C_RESET}                       Show all profiles (* = active)
-  ${C_CYAN}current${C_RESET}                    Print the active profile name
+  ${C_CYAN}current${C_RESET}                    Moved to 'home current' for full-mode profiles
   ${C_CYAN}add${C_RESET} <name>                 Create a new empty profile (login on next codex run)
   ${C_CYAN}import-current${C_RESET} [name]      Import existing ~/.codex as a profile (default: 'default')
-  ${C_CYAN}switch${C_RESET} <name>              Make <name> the active profile (no re-login)
+  ${C_CYAN}switch${C_RESET} <name>              Replace native ~/.codex/auth.json from profile auth
   ${C_CYAN}remove${C_RESET} <name>              Deactivate a profile and preserve its data
   ${C_CYAN}auth${C_RESET} <subcommand>          Manage minimal auth replacement - see: auth help
+  ${C_CYAN}home${C_RESET} <subcommand>          Explicit full CODEX_HOME compatibility mode
   ${C_CYAN}config${C_RESET} <subcommand>        Manage shared config.toml (MCP servers etc.) - see: config help
-  ${C_CYAN}env${C_RESET}                        Print 'export CODEX_HOME=...' for eval
-  ${C_CYAN}run${C_RESET} -- <cmd> [args]        Run a command with the active profile's CODEX_HOME
-  ${C_CYAN}shell-init${C_RESET}                 Print a snippet to eval in ~/.zshrc / ~/.bashrc
+  ${C_CYAN}env${C_RESET}                        Moved to 'home env'
+  ${C_CYAN}run${C_RESET} -- <cmd> [args]        Moved to 'home run'
+  ${C_CYAN}shell-init${C_RESET}                 Moved to 'home shell-init'
   ${C_CYAN}help${C_RESET}                       Show this help
 
 ${C_BOLD}SHARED VS PRIVATE${C_RESET}
@@ -937,17 +986,21 @@ ${C_BOLD}SHARED VS PRIVATE${C_RESET}
   ${C_DIM}Private to each profile:${C_RESET}                  auth.json, sessions/, history.jsonl, cache
 
 ${C_BOLD}TYPICAL FLOW${C_RESET}
-  ${C_DIM}# first time: bring your existing login in${C_RESET}
+  ${C_DIM}# first time: bring your existing native auth into a profile${C_RESET}
   codex-profile import-current work
 
-  ${C_DIM}# add another account (empty -> codex will OAuth on first run)${C_RESET}
-  codex-profile add personal
-  codex-profile switch personal
-  codex-profile run -- codex          ${C_DIM}# triggers OAuth in the browser${C_RESET}
-
-  ${C_DIM}# switch back, no re-login${C_RESET}
+  ${C_DIM}# switch identity while keeping runtime state under ~/.codex${C_RESET}
   codex-profile switch work
-  codex-profile run -- codex
+  unset CODEX_HOME
+
+  ${C_DIM}# add another account; use full mode only for one-time OAuth${C_RESET}
+  codex-profile add personal
+  codex-profile home switch personal
+  codex-profile home run -- codex     ${C_DIM}# creates profile auth.json${C_RESET}
+
+  ${C_DIM}# after OAuth, return to auth-only switching${C_RESET}
+  unset CODEX_HOME
+  codex-profile switch personal
 
 ${C_BOLD}PROFILES LOCATION${C_RESET}
   $PROFILES_DIR
@@ -961,16 +1014,17 @@ main() {
 
     case "$cmd" in
         list|ls)              cmd_list "$@" ;;
-        current|active)       cmd_current "$@" ;;
+        current|active)       cmd_full_mode_moved "$cmd" "$cmd" ;;
         add|new)              cmd_add "$@" ;;
         import-current|import) cmd_import_current "$@" ;;
         switch|use)           cmd_switch "$@" ;;
         remove|rm|delete)     cmd_remove "$@" ;;
         auth)                 cmd_auth "$@" ;;
-        env)                  cmd_env "$@" ;;
-        run|exec)             cmd_run "$@" ;;
+        home|full)            cmd_home "$@" ;;
+        env)                  cmd_full_mode_moved "$cmd" "$cmd" ;;
+        run|exec)             cmd_full_mode_moved "$cmd" "$cmd" ;;
         config)               cmd_config "$@" ;;
-        shell-init|init)      cmd_shell_init "$@" ;;
+        shell-init|init)      cmd_full_mode_moved "$cmd" "$cmd" ;;
         help|-h|--help)       cmd_help ;;
         *)                    die "unknown command: $cmd (try: codex-profile help)" ;;
     esac

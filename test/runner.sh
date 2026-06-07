@@ -181,19 +181,19 @@ test_lifecycle_commands_are_isolated() {
     assert_file_exists "$PROFILES/work"
     assert_symlink "$PROFILES/work/config.toml"
 
-    run_cli switch work
+    run_cli home switch work
     assert_status 0
     assert_file_content "$PROFILES/.active" "work"
 
-    run_cli current
+    run_cli home current
     assert_status 0
     assert_stdout_contains "work"
 
-    run_cli env
+    run_cli home env
     assert_status 0
     assert_stdout_contains "CODEX_HOME=$PROFILES/work"
 
-    run_cli run -- sh -c 'printf "%s" "$CODEX_HOME"'
+    run_cli home run -- sh -c 'printf "%s" "$CODEX_HOME"'
     assert_status 0
     assert_stdout_contains "$PROFILES/work"
 
@@ -266,17 +266,17 @@ test_invalid_active_state_is_rejected() {
     assert_status 0
     printf '../evil\n' > "$PROFILES/.active"
 
-    run_cli current
+    run_cli home current
     assert_status_nonzero
     assert_stderr_contains "active profile state is invalid"
-    run_cli env
+    run_cli home env
     assert_status_nonzero
     assert_stderr_contains "active profile state is invalid"
-    run_cli run -- true
+    run_cli home run -- true
     assert_status_nonzero
     assert_stderr_contains "active profile state is invalid"
 
-    run_cli shell-init
+    run_cli home shell-init
     assert_status 0
     CODEX_HOME= HOME="$HOME_FIXTURE" CODEX_PROFILES_DIR="$PROFILES" bash -c "$(cat "$STDOUT_FILE"); [[ -z \"\${CODEX_HOME:-}\" ]]"
 }
@@ -303,7 +303,7 @@ test_list_and_config_status_skip_invalid_dirs() {
 test_atomic_active_writes_for_switch_and_import() {
     run_cli add work
     assert_status 0
-    run_cli switch work
+    run_cli home switch work
     assert_status 0
     assert_file_content "$PROFILES/.active" "work"
     compgen -G "$PROFILES/.active.tmp.*" >/dev/null && fail "temporary active files remain after switch"
@@ -324,7 +324,7 @@ test_atomic_active_writes_for_switch_and_import() {
 test_safe_remove_rejects_unmanaged_targets() {
     run_cli add work
     assert_status 0
-    run_cli switch work
+    run_cli home switch work
     assert_status 0
     run_cli_with_stdin work remove work
     assert_status 0
@@ -361,7 +361,7 @@ test_remove_archives_profile_without_deleting_runtime_artifacts() {
     local marker="REMOVE_AUTH_SECRET"
     run_cli add work
     assert_status 0
-    run_cli switch work
+    run_cli home switch work
     assert_status 0
     write_auth_fixture "$PROFILES/work/auth.json" "$marker"
     mkdir -p "$PROFILES/work/sessions" "$PROFILES/work/log" "$PROFILES/work/hooks" "$PROFILES/work/skills/example" "$PROFILES/work/agents" "$PROFILES/work/generated_images"
@@ -434,24 +434,24 @@ test_process_detection_is_narrow_and_best_effort() {
     run_cli add personal
     assert_status 0
 
-    run_cli switch work
+    run_cli home switch work
     assert_status 0
     assert_file_content "$PROFILES/.active" "work"
 
     write_process_stubs exact
-    run_cli_with_stdin n switch personal
+    run_cli_with_stdin n home switch personal
     assert_status_nonzero
     assert_stderr_contains "warning:"
     assert_stderr_contains "codex process(es) still running"
     assert_file_content "$PROFILES/.active" "work"
 
     write_process_stubs unrelated
-    run_cli switch personal
+    run_cli home switch personal
     assert_status 0
     assert_file_content "$PROFILES/.active" "personal"
 
     write_process_stubs missing
-    run_cli switch work
+    run_cli home switch work
     assert_status 0
     assert_file_content "$PROFILES/.active" "work"
 
@@ -531,6 +531,28 @@ test_auth_switch_replaces_only_native_auth_and_creates_backup() {
     copy_line="$(printf '%s\n' "$switch_body" | grep -n 'copy_auth_without_leaking' | head -1 | cut -d: -f1)"
     [[ -n "$preview_line" && -n "$backup_line" && -n "$copy_line" ]] || fail "cmd_auth_switch missing preview/backup/copy calls"
     [[ "$preview_line" -lt "$backup_line" && "$backup_line" -lt "$copy_line" ]] || fail "cmd_auth_switch call order is not preview -> backup -> copy"
+}
+
+test_top_level_switch_is_auth_only() {
+    local native_marker="TOP_SWITCH_NATIVE_SECRET"
+    local profile_marker="TOP_SWITCH_PROFILE_SECRET"
+    run_cli add work
+    assert_status 0
+    run_cli add personal
+    assert_status 0
+    run_cli home switch work
+    assert_status 0
+    assert_file_content "$PROFILES/.active" "work"
+
+    write_auth_fixture "$HOME_FIXTURE/.codex/auth.json" "$native_marker"
+    write_auth_fixture "$PROFILES/personal/auth.json" "$profile_marker"
+
+    run_cli switch personal
+    assert_status 0
+    assert_file_content "$PROFILES/.active" "work"
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$PROFILES/personal/auth.json"
+    assert_stdout_contains "native auth.json replaced from profile 'personal'"
+    assert_output_not_contains_secret_markers "$native_marker" "$profile_marker" "access_token" "refresh_token" "account_id"
 }
 
 test_auth_switch_missing_native_auth_is_fixture_safe() {
@@ -728,14 +750,14 @@ test_full_codex_home_mode_remains_compatible_after_auth_commands() {
     assert_status 0
     run_cli add personal
     assert_status 0
-    run_cli switch work
+    run_cli home switch work
     assert_status 0
     assert_file_content "$PROFILES/.active" "work"
 
-    run_cli env
+    run_cli home env
     assert_status 0
     assert_stdout_contains "CODEX_HOME=$PROFILES/work"
-    run_cli run -- sh -c 'printf "%s" "$CODEX_HOME"'
+    run_cli home run -- sh -c 'printf "%s" "$CODEX_HOME"'
     assert_status 0
     assert_stdout_contains "$PROFILES/work"
 
@@ -745,16 +767,16 @@ test_full_codex_home_mode_remains_compatible_after_auth_commands() {
     assert_status 0
     assert_file_content "$PROFILES/.active" "work"
 
-    run_cli env
+    run_cli home env
     assert_status 0
     assert_stdout_contains "CODEX_HOME=$PROFILES/work"
     assert_stdout_not_contains "$HOME_FIXTURE/.codex"
-    run_cli run -- sh -c 'printf "%s" "$CODEX_HOME"'
+    run_cli home run -- sh -c 'printf "%s" "$CODEX_HOME"'
     assert_status 0
     assert_stdout_contains "$PROFILES/work"
     assert_stdout_not_contains "$HOME_FIXTURE/.codex"
 
-    run_cli shell-init
+    run_cli home shell-init
     assert_status 0
     local shell_output eval_file
     eval_file="$TEST_TMP/shell-init-eval.sh"
@@ -765,13 +787,26 @@ EVAL
     shell_output="$(CODEX_HOME= HOME="$HOME_FIXTURE" CODEX_PROFILES_DIR="$PROFILES" bash "$eval_file")"
     [[ "$shell_output" == "$PROFILES/work" ]] || fail "shell-init exported '$shell_output' instead of full profile path"
 
+    run_cli env
+    assert_status_nonzero
+    assert_stderr_contains "moved to 'codex-profile home env'"
+    run_cli current
+    assert_status_nonzero
+    assert_stderr_contains "moved to 'codex-profile home current'"
+    run_cli run -- true
+    assert_status_nonzero
+    assert_stderr_contains "moved to 'codex-profile home run'"
+    run_cli shell-init
+    assert_status_nonzero
+    assert_stderr_contains "moved to 'codex-profile home shell-init'"
+
     run_cli help
     assert_status 0
     assert_stdout_contains "auth <subcommand>"
     run_cli auth help
     assert_status 0
     assert_stdout_contains "Minimal auth commands operate on auth.json only"
-    assert_stdout_contains "full CODEX_HOME compatibility mode"
+    assert_stdout_contains "Full CODEX_HOME compatibility mode"
     assert_output_not_contains_secret_markers "$native_marker" "$personal_marker" "access_token" "refresh_token" "account_id"
 }
 
@@ -802,6 +837,7 @@ run_test "PROF-02 remove archives profile without deleting runtime artifacts" te
 run_test "SAFE-04 process detection is narrow and best-effort" test_process_detection_is_narrow_and_best_effort
 run_test "AUTH-02 auth paths preview is sanitized and fixture-safe" test_auth_paths_preview_is_sanitized_and_fixture_safe
 run_test "AUTH-01 auth switch replaces only native auth and creates backup" test_auth_switch_replaces_only_native_auth_and_creates_backup
+run_test "AUTH-04 top-level switch is auth-only" test_top_level_switch_is_auth_only
 run_test "AUTH-01 auth switch missing native/source edges are safe" test_auth_switch_missing_native_auth_is_fixture_safe
 run_test "BACK-03 auth backups list is sanitized" test_auth_backups_list_is_sanitized
 run_test "BACK-02 auth restore uses latest backup without leaking tokens" test_auth_restore_uses_latest_backup_without_leaking_tokens
