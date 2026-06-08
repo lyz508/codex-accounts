@@ -918,6 +918,32 @@ _codex_profile_apply
 EOF
 }
 
+cmd_auth_init() {
+    # Defines a shell wrapper so auth-only switch can unset CODEX_HOME in the
+    # caller shell before invoking the real codex-profile executable.
+    cat <<'EOF'
+# --- codex-profile auth-only shell integration ---
+codex-profile() {
+    case "${1:-}" in
+        switch|use)
+            unset CODEX_HOME
+            command codex-profile "$@"
+            ;;
+        auth)
+            if [[ "${2:-}" == "switch" ]]; then
+                unset CODEX_HOME
+            fi
+            command codex-profile "$@"
+            ;;
+        *)
+            command codex-profile "$@"
+            ;;
+    esac
+}
+# --- end codex-profile auth-only shell integration ---
+EOF
+}
+
 cmd_home() {
     local sub="${1:-help}"
     [[ $# -gt 0 ]] && shift || true
@@ -974,6 +1000,7 @@ ${C_BOLD}COMMANDS${C_RESET}
   ${C_CYAN}switch${C_RESET} <name>              Replace native ~/.codex/auth.json from profile auth
   ${C_CYAN}remove${C_RESET} <name>              Deactivate a profile and preserve its data
   ${C_CYAN}auth${C_RESET} <subcommand>          Manage minimal auth replacement - see: auth help
+  ${C_CYAN}auth-init${C_RESET}                  Print shell wrapper for auth-only switching
   ${C_CYAN}home${C_RESET} <subcommand>          Explicit full CODEX_HOME compatibility mode
   ${C_CYAN}config${C_RESET} <subcommand>        Manage shared config.toml (MCP servers etc.) - see: config help
   ${C_CYAN}env${C_RESET}                        Moved to 'home env'
@@ -991,7 +1018,6 @@ ${C_BOLD}TYPICAL FLOW${C_RESET}
 
   ${C_DIM}# switch identity while keeping runtime state under ~/.codex${C_RESET}
   codex-profile switch work
-  unset CODEX_HOME
 
   ${C_DIM}# add another account; use full mode only for one-time OAuth${C_RESET}
   codex-profile add personal
@@ -999,7 +1025,6 @@ ${C_BOLD}TYPICAL FLOW${C_RESET}
   codex-profile home run -- codex     ${C_DIM}# creates profile auth.json${C_RESET}
 
   ${C_DIM}# after OAuth, return to auth-only switching${C_RESET}
-  unset CODEX_HOME
   codex-profile switch personal
 
 ${C_BOLD}PROFILES LOCATION${C_RESET}
@@ -1020,6 +1045,7 @@ main() {
         switch|use)           cmd_switch "$@" ;;
         remove|rm|delete)     cmd_remove "$@" ;;
         auth)                 cmd_auth "$@" ;;
+        auth-init)            cmd_auth_init "$@" ;;
         home|full)            cmd_home "$@" ;;
         env)                  cmd_full_mode_moved "$cmd" "$cmd" ;;
         run|exec)             cmd_full_mode_moved "$cmd" "$cmd" ;;

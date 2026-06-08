@@ -810,6 +810,42 @@ EVAL
     assert_output_not_contains_secret_markers "$native_marker" "$personal_marker" "access_token" "refresh_token" "account_id"
 }
 
+test_auth_init_wrapper_unsets_codex_home_for_switch() {
+    local native_marker="INIT_NATIVE_SECRET"
+    local profile_marker="INIT_PROFILE_SECRET"
+    run_cli add work
+    assert_status 0
+    run_cli add personal
+    assert_status 0
+    run_cli home switch work
+    assert_status 0
+    write_auth_fixture "$HOME_FIXTURE/.codex/auth.json" "$native_marker"
+    write_auth_fixture "$PROFILES/personal/auth.json" "$profile_marker"
+
+    run_cli auth-init
+    assert_status 0
+
+    local shim="$STUB_BIN/codex-profile"
+    cat > "$shim" <<SHIM
+#!/usr/bin/env bash
+exec bash "$PWD/codex-profile" "\$@"
+SHIM
+    chmod +x "$shim"
+
+    local eval_file="$TEST_TMP/auth-init-eval.sh"
+    cp "$STDOUT_FILE" "$eval_file"
+    cat >> "$eval_file" <<'EVAL'
+CODEX_HOME="$PROFILES/work"
+codex-profile switch personal >/tmp/codex-profile-auth-init.out
+printf 'CODEX_HOME=%s\n' "${CODEX_HOME:-}"
+EVAL
+
+    local shell_output
+    shell_output="$(HOME="$HOME_FIXTURE" CODEX_PROFILES_DIR="$PROFILES" PATH="$STUB_BIN:$PATH" PROFILES="$PROFILES" bash "$eval_file")"
+    [[ "$shell_output" == "CODEX_HOME=" ]] || fail "auth-init did not unset CODEX_HOME; output=$shell_output"
+    assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$PROFILES/personal/auth.json"
+}
+
 run_test() {
     TEST_NAME="$1"
     shift
@@ -845,6 +881,7 @@ run_test "PROF-03 auth revert restores latest backup without leaking tokens" tes
 run_test "TEST-02 auth revert without backup is failure-safe" test_auth_revert_without_backup_is_failure_safe
 run_test "BACK-04 auth prune backups requires explicit confirmation" test_auth_prune_backups_requires_explicit_confirmation
 run_test "AUTH-03 full CODEX_HOME mode remains compatible after auth commands" test_full_codex_home_mode_remains_compatible_after_auth_commands
+run_test "AUTH-05 auth-init wrapper unsets CODEX_HOME for switch" test_auth_init_wrapper_unsets_codex_home_for_switch
 
 if [[ $TESTS_FAILED -gt 0 ]]; then
     echo "$TESTS_FAILED/$TESTS_RUN test(s) failed" >&2

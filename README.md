@@ -19,6 +19,10 @@ mkdir -p ~/.local/bin
 mv codex-profile ~/.local/bin/
 chmod +x ~/.local/bin/codex-profile
 
+# Recommended: make auth-only switch clear CODEX_HOME in the current shell.
+echo 'eval "$(codex-profile auth-init)"' >> ~/.zshrc
+exec zsh
+
 # Optional legacy full-mode hook:
 # echo 'eval "$(codex-profile home shell-init)"' >> ~/.zshrc
 ```
@@ -35,6 +39,7 @@ chmod +x ~/.local/bin/codex-profile
 | `import-current [name]` | Copy existing `~/.codex` into a new profile (default name: `default`). On first import, promotes its `config.toml` to the shared file |
 | `switch <name>` (alias: `use`) | Auth-only switch: back up native `~/.codex/auth.json`, then replace it from the profile |
 | `remove <name>` (alias: `rm`) | Deactivate a profile and preserve its data under `_removed/` (requires typing the name to confirm) |
+| `auth-init` | Print the auth-only shell wrapper so `switch` automatically unsets `CODEX_HOME` in the current shell |
 
 ### Minimal auth replacement
 
@@ -87,7 +92,7 @@ Daily `codex-profile` usage is auth-only: profiles provide `auth.json`, while Co
 ```text
 codex-profile add <name>          # Create a profile
 codex-profile home run -- codex   # Use only to log in an empty profile
-codex-profile switch <name>       # Switch native ~/.codex/auth.json
+codex-profile switch <name>       # Switch native ~/.codex/auth.json and clear CODEX_HOME via auth-init
 codex-profile list                # Check profile status
 codex-profile remove <name>       # Archive a profile without deleting data
 ```
@@ -122,11 +127,10 @@ codex-profile auth paths personal
 Return to auth-only mode so Codex keeps using native `~/.codex` runtime state:
 
 ```bash
-unset CODEX_HOME
 codex-profile switch personal
 ```
 
-`switch` backs up the current native `~/.codex/auth.json`, then replaces it from the profile.
+If `eval "$(codex-profile auth-init)"` is installed, `switch` first clears `CODEX_HOME` in the current shell, then backs up the current native `~/.codex/auth.json` and replaces it from the profile.
 
 ### 4. Verify a profile works
 
@@ -254,7 +258,7 @@ Minimal auth commands print paths and status only. They do not print token value
 | Situation | Check / fix |
 |---|---|
 | `codex-profile switch <name>` fails | Run `codex-profile auth paths <name>` and confirm `~/.codex-profiles/<name>/auth.json` exists |
-| Codex still uses old profile state | Run `echo "$CODEX_HOME"`; auth-only mode should be empty. Use `unset CODEX_HOME` if needed |
+| Codex still uses old profile state | Run `echo "$CODEX_HOME"`; auth-only mode should be empty. Install `eval "$(codex-profile auth-init)"`, or use `unset CODEX_HOME` manually |
 | Switched auth by mistake | Run `codex-profile auth revert` to restore the latest managed backup |
 | Need to inspect a full-mode profile | Use `codex-profile home run -- codex`; avoid `eval "$(codex-profile home env)"` unless you really want the whole shell to use that profile |
 | Want to remove a profile safely | `remove` archives it under `_removed/`; manually clean archives only after checking them |
