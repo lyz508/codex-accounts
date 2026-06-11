@@ -87,6 +87,29 @@ profile_has_auth() {
     [[ -f "$(profile_path "$1")/auth.json" ]]
 }
 
+auth_active_profile() {
+    local native
+    native="$(native_auth_file)"
+    [[ -f "$native" ]] || return 0
+    [[ -d "$PROFILES_DIR" ]] || return 0
+
+    local dir name match=""
+    for dir in "$PROFILES_DIR"/*/ "$PROFILES_DIR"/.[!.]*/; do
+        [[ -d "$dir" ]] || continue
+        name="$(basename "$dir")"
+        [[ "$name" == "_shared" || "$name" == "_removed" ]] && continue
+        is_valid_profile_name "$name" || continue
+        [[ -f "$(profile_auth_file "$name")" ]] || continue
+        if cmp -s "$native" "$(profile_auth_file "$name")"; then
+            if [[ -n "$match" ]]; then
+                return 0
+            fi
+            match="$name"
+        fi
+    done
+    [[ -n "$match" ]] && echo "$match"
+}
+
 active_profile() {
     [[ -f "$STATE_FILE" ]] || return 0
 
@@ -358,8 +381,9 @@ check_running_codex() {
 
 list_profiles() {
     ensure_dirs
-    local active
-    active="$(active_profile)"
+    local auth_active full_active
+    auth_active="$(auth_active_profile)"
+    full_active="$(active_profile)"
     local found=0
 
     if [[ -d "$PROFILES_DIR" ]]; then
@@ -375,7 +399,11 @@ list_profiles() {
             found=1
 
             local marker="  "
-            [[ "$name" == "$active" ]] && marker="${C_GREEN}*${C_RESET} "
+            if [[ -n "$auth_active" ]]; then
+                [[ "$name" == "$auth_active" ]] && marker="${C_GREEN}*${C_RESET} "
+            else
+                [[ "$name" == "$full_active" ]] && marker="${C_GREEN}*${C_RESET} "
+            fi
 
             local status
             if profile_has_auth "$name"; then
@@ -394,7 +422,7 @@ list_profiles() {
 }
 
 cmd_list() {
-    echo "${C_BOLD}Codex profiles${C_RESET}  ${C_DIM}(at $PROFILES_DIR)${C_RESET}"
+    echo "${C_BOLD}Codex profiles${C_RESET}  ${C_DIM}(at $PROFILES_DIR, * = current native auth)${C_RESET}"
     echo
     list_profiles
 }
@@ -993,7 +1021,7 @@ ${C_BOLD}USAGE${C_RESET}
   codex-profile <command> [args]
 
 ${C_BOLD}COMMANDS${C_RESET}
-  ${C_CYAN}list${C_RESET}                       Show all profiles (* = active)
+  ${C_CYAN}list${C_RESET}                       Show profiles (* = current native auth)
   ${C_CYAN}current${C_RESET}                    Moved to 'home current' for full-mode profiles
   ${C_CYAN}add${C_RESET} <name>                 Create a new empty profile (login on next codex run)
   ${C_CYAN}import-current${C_RESET} [name]      Import existing ~/.codex as a profile (default: 'default')

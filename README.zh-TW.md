@@ -33,7 +33,7 @@ exec zsh
 
 | 指令 | 作用 |
 |---|---|
-| `list` (alias: `ls`) | 列出所有 profile，以 `*` 標示 active full-mode profile，並顯示登入狀態 |
+| `list` (alias: `ls`) | 列出所有 profile，以 `*` 標示和 native `~/.codex/auth.json` 相同的 profile，並顯示登入狀態 |
 | `current` (alias: `active`) | 已移到 `home current`，用於 full-mode profile |
 | `add <name>` | 建立空 profile。第一次以 full mode 跑 `codex` 時可觸發 OAuth |
 | `import-current [name]` | 把現有 `~/.codex` 複製成新 profile（預設名稱 `default`）。首次 import 時會把它的 `config.toml` 升格為 shared file |

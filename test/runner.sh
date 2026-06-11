@@ -553,6 +553,10 @@ test_top_level_switch_is_auth_only() {
     assert_files_same_without_printing "$HOME_FIXTURE/.codex/auth.json" "$PROFILES/personal/auth.json"
     assert_stdout_contains "native auth.json replaced from profile 'personal'"
     assert_output_not_contains_secret_markers "$native_marker" "$profile_marker" "access_token" "refresh_token" "account_id"
+
+    run_cli list
+    assert_status 0
+    grep -Eq '^\* personal[[:space:]]+logged in$' "$STDOUT_FILE" || fail "list did not mark personal as current native auth; stdout=$(cat "$STDOUT_FILE")"
 }
 
 test_auth_switch_missing_native_auth_is_fixture_safe() {
